@@ -55,7 +55,6 @@ In 5 bullet points, give a quick gem assessment:
 - Short verdict: PASS or SKIP and why
 
 Be direct and concise. No fluff.
-
 """
 
 my_chain = PromptTemplate(
@@ -348,7 +347,8 @@ Scanning again today...
 
 Found *{len(daily_log)} potential gem(s)* in the last 24 hours:
 
-{lines}Keep watching these and DYOR 👀
+{lines}
+Keep watching these and DYOR 👀
 ⚠️ _Not financial advice_
 """
 
@@ -356,42 +356,207 @@ Found *{len(daily_log)} potential gem(s)* in the last 24 hours:
     print("📋 Daily summary sent!")
 
 
+# ── TELEGRAM UPDATES (for receiving commands) ─────────────────────────────────
+def get_updates(offset: int = None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    params = {"timeout": 10, "offset": offset}
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        return response.json().get("result", [])
+    except:
+        return []
+
+
+# ── CA LOOKUP COMMAND ─────────────────────────────────────────────────────────
+def handle_ca_lookup(ca: str):
+    """When user sends a contract address, analyze it immediately."""
+    send_telegram(f"🔍 Looking up `{ca}`...\nFetching data from DexScreener...")
+
+    pair = get_token_details(ca)
+    if not pair:
+        send_telegram("❌ Couldn't find this token on DexScreener.\nMake sure it's a valid Solana contract address.")
+        return
+
+    base = pair.get("baseToken", {})
+    name = base.get("name", "Unknown")
+    symbol = base.get("symbol", "???")
+    chain = pair.get("chainId", "unknown").upper()
+    price = pair.get("priceUsd", "0")
+    market_cap = pair.get("marketCap", 0)
+    volume = pair.get("volume", {}).get("h24", 0)
+    liquidity = pair.get("liquidity", {}).get("usd", 0)
+    change_5m = pair.get("priceChange", {}).get("m5", 0)
+    change_1h = pair.get("priceChange", {}).get("h1", 0)
+    change_24h = pair.get("priceChange", {}).get("h24", 0)
+    buys = pair.get("txns", {}).get("h24", {}).get("buys", 0)
+    sells = pair.get("txns", {}).get("h24", {}).get("sells", 0)
+    holders = pair.get("info", {}).get("holders", 0)
+    buy_sell_ratio = round(buys / sells, 2) if sells > 0 else "∞"
+    pair_url = pair.get("url", "")
+    created_at = pair.get("pairCreatedAt")
+    age = format_age(created_at)
+
+    # Rug check
+    safety = check_rug_safety(ca)
+    liq_locked = safety["liq_locked"]
+    contract_verified = safety["contract_verified"]
+    rug_score = safety["score"]
+    risks = safety["risks"]
+    risk_text = "\n".join([f"  ⚠️ {r}" for r in risks]) if risks else "  ✅ No major risks detected"
+
+    # AI analysis
+    ai_analysis = my_chain.invoke({
+        "name": name,
+        "symbol": symbol,
+        "chain": chain,
+        "price": price,
+        "market_cap": f"{market_cap:,.0f}",
+        "volume": f"{volume:,.0f}",
+        "liquidity": f"{liquidity:,.0f}",
+        "holders": holders,
+        "change_5m": change_5m,
+        "change_1h": change_1h,
+        "change_24h": change_24h,
+        "buys": buys,
+        "sells": sells,
+        "buy_sell_ratio": buy_sell_ratio,
+        "age": age,
+        "liq_locked": liq_locked,
+        "contract_verified": contract_verified
+    })
+
+    message = f"""
+🔎 *Manual CA Lookup — {name} (${symbol})*
+
+📊 *Metrics*
+• Price: ${price}
+• Market Cap: ${market_cap:,.0f}
+• 24H Volume: ${volume:,.0f}
+• Liquidity: ${liquidity:,.0f}
+• Holders: {holders}
+• Age: {age}
+
+📈 *Price Changes*
+• 5 Min: {change_5m}%
+• 1 Hour: {change_1h}%
+• 24 Hour: {change_24h}%
+
+🔄 *Transactions (24H)*
+• Buys: {buys} | Sells: {sells}
+• Buy/Sell Ratio: {buy_sell_ratio}x
+
+🛡️ *Safety Check*
+• Score: {rug_score}/1000
+• Liquidity Locked: {liq_locked}
+• Contract Verified: {contract_verified}
+• Risks:
+{risk_text}
+
+🤖 *AI Analysis*
+{ai_analysis}
+
+🔗 [View on DexScreener]({pair_url})
+
+⚠️ _DYOR — Not financial advice_
+"""
+    send_telegram(message)
+
+
+def handle_command(text: str):
+    """Handle bot commands."""
+    text = text.strip()
+
+    if text == "/start" or text == "/help":
+        send_telegram("""
+👋 *Gem Finder Bot*
+
+Here's what I can do:
+
+🔍 *CA Lookup* — Just paste any Solana contract address and I'll instantly analyze it for you
+
+📡 *Auto Scanner* — I'm already scanning DexScreener every 5 minutes and will alert you when I find gems
+
+📋 *Daily Summary* — Every morning at 8AM I send a recap of all gems found
+
+*Commands:*
+/status — Check if bot is running
+/help — Show this message
+
+To analyze a coin, just paste its contract address here 👇
+""")
+
+    elif text == "/status":
+        send_telegram(f"""
+✅ *Bot is alive and running!*
+
+📡 Scanning every {SCAN_INTERVAL // 60} minutes
+🔗 Chain: Solana
+📋 Daily summary at {DAILY_SUMMARY_HOUR}:00 AM
+
+Just paste a CA anytime to analyze a coin 👀
+""")
+
+    elif len(text) > 30 and not text.startswith("/"):
+        # Treat long strings as contract addresses
+        handle_ca_lookup(text)
+
+    else:
+        send_telegram("❓ I don't recognize that command. Type /help to see what I can do, or just paste a contract address!")
+
+
 # ── MAIN SCANNER LOOP ─────────────────────────────────────────────────────────
 def main():
     print("🚀 Gem Scanner started!")
     print(f"📡 Scanning Solana every {SCAN_INTERVAL // 60} minutes...")
     print(f"📋 Daily summary will be sent at {DAILY_SUMMARY_HOUR}:00 AM")
-    send_telegram("🚀 *Gem Scanner is now active!*\nScanning Solana for fresh gems under 24h old 👀\nDaily summary drops at 8AM every day 📋")
+    send_telegram("🚀 *Gem Scanner is now active!*\nScanning Solana for fresh gems under 24h old 👀\nDaily summary drops at 8AM every day 📋\n\nType /help to see all commands!")
 
     seen_tokens = set()
     daily_log = []
     last_summary_date = None
+    last_update_id = None
+    last_scan_time = 0
 
     while True:
         now = datetime.datetime.now()
 
-        # Send daily summary at configured hour
+        # ── Check for incoming messages ──
+        updates = get_updates(offset=last_update_id)
+        for update in updates:
+            last_update_id = update["update_id"] + 1
+            message = update.get("message", {})
+            text = message.get("text", "")
+            chat_id = str(message.get("chat", {}).get("id", ""))
+
+            # Only respond to your own chat
+            if text and chat_id == str(CHAT_ID):
+                print(f"📩 Received: {text}")
+                handle_command(text)
+
+        # ── Daily summary ──
         if now.hour == DAILY_SUMMARY_HOUR and now.date() != last_summary_date:
             send_daily_summary(daily_log)
-            daily_log = []  # Reset log after summary
+            daily_log = []
             last_summary_date = now.date()
 
-        print(f"\n🔍 Scanning DexScreener... [{now.strftime('%H:%M:%S')}]")
-        token_addresses = get_new_solana_tokens()
+        # ── Scan every SCAN_INTERVAL seconds ──
+        if time.time() - last_scan_time >= SCAN_INTERVAL:
+            print(f"\n🔍 Scanning DexScreener... [{now.strftime('%H:%M:%S')}]")
+            token_addresses = get_new_solana_tokens()
 
-        for address in token_addresses:
-            if address in seen_tokens:
-                continue
+            for address in token_addresses:
+                if address in seen_tokens:
+                    continue
+                seen_tokens.add(address)
+                pair = get_token_details(address)
+                if pair and passes_filter(pair):
+                    analyze_and_alert(pair, daily_log)
+                    time.sleep(3)
 
-            seen_tokens.add(address)
-            pair = get_token_details(address)
+            print(f"⏳ Next scan in {SCAN_INTERVAL // 60} minutes...")
+            last_scan_time = time.time()
 
-            if pair and passes_filter(pair):
-                analyze_and_alert(pair, daily_log)
-                time.sleep(3)
-
-        print(f"⏳ Next scan in {SCAN_INTERVAL // 60} minutes...")
-        time.sleep(SCAN_INTERVAL)
+        time.sleep(2)  # Check for messages every 2 seconds
 
 
 if __name__ == "__main__":
