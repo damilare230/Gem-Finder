@@ -55,6 +55,7 @@ In 5 bullet points, give a quick gem assessment:
 - Short verdict: PASS or SKIP and why
 
 Be direct and concise. No fluff.
+
 """
 
 my_chain = PromptTemplate(
@@ -347,8 +348,7 @@ Scanning again today...
 
 Found *{len(daily_log)} potential gem(s)* in the last 24 hours:
 
-{lines}
-Keep watching these and DYOR 👀
+{lines}Keep watching these and DYOR 👀
 ⚠️ _Not financial advice_
 """
 
